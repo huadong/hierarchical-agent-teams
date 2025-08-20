@@ -1,12 +1,26 @@
 import json
+import os
 import os.path as path
+import uuid
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 
 from django.shortcuts import HttpResponse
 from django.http import FileResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.core.handlers.wsgi import WSGIRequest
+import asyncio
+import json
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+from channels.layers import get_channel_layer
+
+import asyncio
+from channels.layers import get_channel_layer
+from asgiref.compatibility import guarantee_single_callable
+
+import env
 from agent.graph import app
+from agent.llm import get_llm
 
 def cros(response: HttpResponse):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -20,8 +34,34 @@ def index(request: WSGIRequest):
     # Render the HTML template index.html with the data in the context variable.
     return HttpResponse(json.dumps('test'), content_type='application/json')
 
-
+@csrf_exempt
 def question(request: WSGIRequest):
+    if request.method == 'OPTIONS' or request.method == 'GET':
+        return cros(HttpResponse(''))
+    
+    input = json.loads(request.body.decode('utf-8'))
+    question = input.get('question')
+    if not question:
+        return JsonResponse({"error": "Missing question"}, status=400)
+
+    # generate an uuid session id
+    session_id = uuid.uuid4().hex
+
+    channel_layer = get_channel_layer()
+    # Use the synchronous method or run the async code in an event loop
+    from asgiref.sync import async_to_sync
+    async_to_sync(channel_layer.send)(
+        "ask_openai_channel",
+        {
+            "type": "ask.openai",
+            "question": question,
+            "session_id": session_id,
+        }
+    )
+
+    return cros(JsonResponse({"status": "Question sent to backend", "session_id": session_id}))
+
+def graph(request: WSGIRequest):
     if request.method == 'OPTIONS' or request.method == 'GET':
         return cros(HttpResponse(''))
     input = json.loads(request.body.decode('utf-8'))

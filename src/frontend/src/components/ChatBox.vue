@@ -43,6 +43,205 @@ watch(
   { deep: true, immediate: true }
 )
 
+// Function to update the chat state incrementally
+const updateMessageContent = (content: string) => {
+  // update the latest ai message or create a new one if needed
+  const latestMessage = messages.value[messages.value.length - 1];
+
+  if (latestMessage.sender === 'ai') {
+    latestMessage.text = content;
+  } else {
+    // Add a new assistant message if there's no existing one
+    const aiResponse: Message = {
+      id: Date.now(),
+      text: content,
+      sender: 'ai',
+      timestamp: new Date()
+    };
+
+    messages.value.push(aiResponse);
+  }
+  return {
+    messages: messages,
+    isLoading: true,
+  };
+};
+const parseMessage = (currentChunk: string) => {
+  const jsonObjects = [];
+  // Handle multiple JSON objects in one chunk
+  while (currentChunk) {
+    try {
+      // Try to parse the current chunk as a complete JSON object
+      const parsed = JSON.parse(currentChunk);
+      jsonObjects.push(parsed);
+      break; // If successful, exit the loop
+    } catch (parseError) {
+      // If parsing fails, try to find the boundary of the first complete JSON object
+      let braceCount = 0;
+      let inString = false;
+      let escapeNext = false;
+      
+      for (let i = 0; i < currentChunk.length; i++) {
+        const char = currentChunk[i];
+        
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+        
+        if (char === '\\') {
+          escapeNext = true;
+          continue;
+        }
+        
+        if (char === '"' && !escapeNext) {
+          inString = !inString;
+          continue;
+        }
+        
+        if (!inString) {
+          if (char === '{' || char === '[') {
+            braceCount++;
+          } else if (char === '}' || char === ']') {
+            braceCount--;
+          }
+          
+          // If we've closed all braces, we might have a complete object
+          if (braceCount === 0 && (char === '}' || char === ']')) {
+            try {
+              const potentialJson = currentChunk.substring(0, i + 1);
+              const parsed = JSON.parse(potentialJson);
+              jsonObjects.push(parsed);
+              // Update the chunk to the remaining part
+              currentChunk = currentChunk.substring(i + 1).trim();
+              break;
+            } catch (innerError) {
+              // Not a valid JSON yet, continue
+              console.error('Error parsing JSON:', innerError);
+            }
+          }
+        }
+      }
+      
+      // If we couldn't parse anything, break to avoid infinite loop
+      if (jsonObjects.length === 0) {
+        console.warn('Could not parse JSON chunk:', currentChunk);
+        break;
+      }
+    }
+  }
+  return jsonObjects;
+}
+
+const invokeGraph = async (question: string) => { 
+  const response = await fetch('http://127.0.0.1:8000/agentapp/question', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no'
+      // Add any authentication headers if needed
+    },
+    body: JSON.stringify({ "question": question }),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error('Network response was not ok or streaming is not supported.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  let fullContent = '';
+
+  // Process the stream
+  const processStream = async () => {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const currentChunk = chunk.trim();
+
+      const jsonObjects = parseMessage(currentChunk)
+
+      // Process each JSON object
+      for (const json of jsonObjects) {
+        let html = '';
+        if (json.node) {
+          html = '<div style="color: gray;"><b>(' +json.namespace+ ')Node: ' + json.node + '</b><div><i>' + json.value + '</i></div></div>';
+        } else {
+          // html = '<div><b>Question: </b>' + json.question + '<div><b>Answer: </b><i>' + json.generation + '</i></div></div>';
+        }
+        fullContent += html;
+      }
+
+      // Update the latest assistant message with the streamed content
+      updateMessageContent(fullContent);
+    }
+
+    // Finalize the assistant message once streaming is complete
+    const latestMessage = messages.value[messages.value.length - 1];
+
+    if (latestMessage.sender === 'ai') {
+      latestMessage.text = fullContent;
+      return {
+        messages: messages,
+        isLoading: false,
+      };
+    }
+
+    return {
+      ...messages.value,
+      isLoading: false,
+    };
+  };
+
+  await processStream();
+}
+
+let eventSource: EventSource | null = null;
+const invokeChat = async (question: string) => { 
+  // close previous event source
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+
+  const response = await fetch('http://127.0.0.1:8000/agentapp/question', {
+      method: 'POST',
+      headers: {
+          'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+          question: question
+      })
+  });
+
+  if (response.ok) {
+      const jsonObjects = await response.json();
+      eventSource = new EventSource(`/streaming/?session_id=${jsonObjects.session_id}`);
+
+      let fullContent = '';
+      eventSource.onmessage = (event) => {
+          const data = event.data;
+          if (data === "[DONE]") {
+              eventSource?.close();
+              return;
+          }
+
+          fullContent += data;
+          updateMessageContent(fullContent);
+
+      };
+
+      eventSource.onerror = (error) => {
+          console.error("EventSource failed:", error);
+          eventSource?.close();
+      };
+  }
+};
+
 const sendMessage = async () => {
   if (!inputText.value.trim() || isLoading.value) return
 
@@ -60,169 +259,8 @@ const sendMessage = async () => {
   isLoading.value = true
 
   try {
-    // // Simulate API call to AI
-    // const aiResponse = await fetchAIResponse(userInput)
-    
-    // // Add AI response
-    // const aiMessage: Message = {
-    //   id: Date.now() + 1,
-    //   text: aiResponse,
-    //   sender: 'ai',
-    //   timestamp: new Date()
-    // }
-    
-    // messages.value.push(aiMessage)
-    const response = await fetch('http://127.0.0.1:8000/agentapp/question', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no'
-        // Add any authentication headers if needed
-      },
-      body: JSON.stringify({ "question": userInput }),
-    });
-
-    if (!response.ok || !response.body) {
-      throw new Error('Network response was not ok or streaming is not supported.');
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    let fullContent = '';
-    let aiResponseAdded = false;
-
-    // Function to update the chat state incrementally
-    const updateMessageContent = (content: string) => {
-      // update the latest ai message or create a new one if needed
-      const latestMessage = messages.value[messages.value.length - 1];
-
-      if (latestMessage.sender === 'ai') {
-        latestMessage.text = content;
-      } else {
-        // Add a new assistant message if there's no existing one
-        const aiResponse: Message = {
-          id: Date.now(),
-          text: content,
-          sender: 'ai',
-          timestamp: new Date()
-        };
-
-        messages.value.push(aiResponse);
-        aiResponseAdded = true;
-      }
-      return {
-        messages: messages,
-        isLoading: true,
-      };
-    };
-
-    // Process the stream
-    const processStream = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const jsonObjects = [];
-        let currentChunk = chunk.trim();
-
-        // Handle multiple JSON objects in one chunk
-        while (currentChunk) {
-          try {
-            // Try to parse the current chunk as a complete JSON object
-            const parsed = JSON.parse(currentChunk);
-            jsonObjects.push(parsed);
-            break; // If successful, exit the loop
-          } catch (parseError) {
-            // If parsing fails, try to find the boundary of the first complete JSON object
-            let braceCount = 0;
-            let inString = false;
-            let escapeNext = false;
-            
-            for (let i = 0; i < currentChunk.length; i++) {
-              const char = currentChunk[i];
-              
-              if (escapeNext) {
-                escapeNext = false;
-                continue;
-              }
-              
-              if (char === '\\') {
-                escapeNext = true;
-                continue;
-              }
-              
-              if (char === '"' && !escapeNext) {
-                inString = !inString;
-                continue;
-              }
-              
-              if (!inString) {
-                if (char === '{' || char === '[') {
-                  braceCount++;
-                } else if (char === '}' || char === ']') {
-                  braceCount--;
-                }
-                
-                // If we've closed all braces, we might have a complete object
-                if (braceCount === 0 && (char === '}' || char === ']')) {
-                  try {
-                    const potentialJson = currentChunk.substring(0, i + 1);
-                    const parsed = JSON.parse(potentialJson);
-                    jsonObjects.push(parsed);
-                    // Update the chunk to the remaining part
-                    currentChunk = currentChunk.substring(i + 1).trim();
-                    break;
-                  } catch (innerError) {
-                    // Not a valid JSON yet, continue
-                  }
-                }
-              }
-            }
-            
-            // If we couldn't parse anything, break to avoid infinite loop
-            if (jsonObjects.length === 0) {
-              console.warn('Could not parse JSON chunk:', currentChunk);
-              break;
-            }
-          }
-        }
-
-        // Process each JSON object
-        for (const json of jsonObjects) {
-          let html = '';
-          if (json.node) {
-            html = '<div style="color: gray;"><b>(' +json.namespace+ ')Node: ' + json.node + '</b><div><i>' + json.value + '</i></div></div>';
-          } else {
-            // html = '<div><b>Question: </b>' + json.question + '<div><b>Answer: </b><i>' + json.generation + '</i></div></div>';
-          }
-          fullContent += html;
-        }
-
-        // Update the latest assistant message with the streamed content
-        updateMessageContent(fullContent);
-      }
-
-      // Finalize the assistant message once streaming is complete
-      const latestMessage = messages.value[messages.value.length - 1];
-
-      if (latestMessage.sender === 'ai') {
-        latestMessage.text = fullContent;
-        return {
-          messages: messages,
-          isLoading: false,
-        };
-      }
-
-      return {
-        ...messages.value,
-        isLoading: false,
-      };
-    };
-
-    await processStream();
+    // await invokeGraph(userInput)
+    await invokeChat(userInput)
   } catch (error) {
     const errorMessage: Message = {
       id: Date.now() + 1,
@@ -234,21 +272,6 @@ const sendMessage = async () => {
   } finally {
     isLoading.value = false
   }
-}
-
-// Simulate AI response
-const fetchAIResponse = (userInput: string): Promise<string> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const responses = [
-        `I understand you're asking about "${userInput}". This is a simulated response from the AI assistant.`,
-        `Thanks for your message: "${userInput}". In a real application, this would connect to an AI service.`,
-        `Interesting point about "${userInput}"! As an AI, I'd provide a detailed response here.`,
-        `I've processed your input: "${userInput}". This demo shows how a chat interface would work.`
-      ]
-      resolve(responses[Math.floor(Math.random() * responses.length)])
-    }, 1000)
-  })
 }
 
 const handleKeyPress = (e: KeyboardEvent) => {

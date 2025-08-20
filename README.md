@@ -1,6 +1,6 @@
 # Preparing
 
-> pip install -U langchain_community tiktoken langchain-openai langchain-cohere langchainhub chromadb langchain langgraph  tavily-python django
+> pip install -U langchain_community tiktoken langchain-openai langchain-cohere langchainhub chromadb langchain langgraph  tavily-python django daphne channels channels_redis django-cors-headers
 
 # Run
 
@@ -44,3 +44,9 @@
 ## Run Web Server
 
 > python src/backend/manage.py runserver
+
+## Run Channels Worker
+
+> python manage.py runworker ask_openai_channel
+
+***Notice: run a redis server before run web server and channels worker***

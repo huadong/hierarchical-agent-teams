@@ -4,7 +4,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 
-def get_llm(model_name: str = "qwen-max", temperature: float = 0.0):
+def get_llm(model_name: str = "qwen-max", streaming = False, temperature: float = 0.0):
     """
     Get the LLM instance based on the model name.
     
@@ -15,8 +15,8 @@ def get_llm(model_name: str = "qwen-max", temperature: float = 0.0):
     Returns:
         ChatOpenAI or ChatTongyi: An instance of the specified LLM.
     """
-    if model_name == "gpt-5":
-        return ChatOpenAI(model=model_name, temperature=temperature)
+    if model_name == "gpt-5" or model_name == "gpt-4o-mini":
+        return ChatOpenAI(model=model_name, streaming=streaming, temperature=temperature)
     elif model_name == "qwen-max":
         return ChatTongyi(model=model_name, temperature=temperature)
     else:
